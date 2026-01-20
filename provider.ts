@@ -727,79 +727,61 @@ class Provider {
     }
 
     private buildSmartSearchQueries(opts: AnimeSmartSearchOptions): string[] {
-        const { media, batch, episodeNumber, resolution } = opts
+        const { media, batch, episodeNumber, resolution, query } = opts
         const hasSingleEpisode = media.episodeCount === 1 || media.format === "MOVIE"
 
-        let queryStr: string[] = []
-        const allTitles = this.getAllTitles(media)
+        const allTitles = query ? [this.sanitizeTitle(query)] : this.getAllTitles(media).map(t => this.sanitizeTitle(t)).filter(Boolean)
+
+        const queries: string[] = []
+
+        const addResolution = (q: string) => resolution ? `${q} ${resolution}` : q
 
         if (hasSingleEpisode) {
-            let str = ""
-            // 1. Build a query string
-            const qTitles = `(${allTitles.map(t => this.sanitizeTitle(t)).join(" | ")})`
-            str += qTitles
-
-            // 2. Add resolution
-            if (resolution) {
-                str += " " + resolution
-            }
-            queryStr = [str]
-
+            allTitles.forEach(title => {
+                queries.push(addResolution(title))
+            })
+        } else if (batch) {
+            const batchTerms = [
+                `${this.zeropad(1)} - ${this.zeropad(media.episodeCount || 0)}`,
+                `${this.zeropad(1)} ~ ${this.zeropad(media.episodeCount || 0)}`,
+                "Batch",
+                "Complete",
+                "+ OVA",
+                "+ Specials",
+                "+ Special",
+                "Seasons",
+                "Parts"
+            ]
+            allTitles.forEach(title => {
+                batchTerms.forEach(term => {
+                    queries.push(addResolution(`${title} ${term}`))
+                })
+            })
         } else {
-            if (!batch) { // Single episode search
-                const qTitles = this.buildTitleString(opts)
-                const qEpisodes = this.buildEpisodeString(opts)
-
-                let str = ""
-                // 1. Add titles
-                str += qTitles
-                // 2. Add episodes
-                if (qEpisodes) {
-                    str += " " + qEpisodes
-                }
-                // 3. Add resolution
-                if (resolution) {
-                    str += " " + resolution
-                }
-
-                queryStr.push(str)
-
-                // If we can also search for absolute episodes
-                if (media.absoluteSeasonOffset && media.absoluteSeasonOffset > 0) {
-                    const metadata = $habari.parse(media.romajiTitle || "")
-                    let absoluteQueryStr = metadata.title || ""
-
-                    const ep = episodeNumber + media.absoluteSeasonOffset
-                    absoluteQueryStr += ` ("${ep}"|"e${ep}"|"ep${ep}")`
-
-                    if (resolution) {
-                        absoluteQueryStr += " " + resolution
-                    }
-                    // Combine original query with absolute query
-                    queryStr = [`(${absoluteQueryStr}) | (${str})`]
-                }
-
-            } else { // Batch search
-                let str = `(${media.romajiTitle})`
-                if (media.englishTitle) {
-                    str = `(${media.romajiTitle} | ${media.englishTitle})`
-                }
-                str += " " + this.buildBatchGroup(media)
-                if (resolution) {
-                    str += " " + resolution
-                }
-                queryStr = [str]
+            // Single episode
+            const epVariants = [this.zeropad(episodeNumber), `e${episodeNumber}`, `ep${episodeNumber}`]
+            allTitles.forEach(title => {
+                epVariants.forEach(ep => {
+                    let q = `${title} ${ep}`
+                    queries.push(addResolution(q))
+                    queries.push(addResolution(`${q} -S0`))
+                })
+            })
+            // Absolute episodes if available
+            if (media.absoluteSeasonOffset && media.absoluteSeasonOffset > 0) {
+                const absEp = episodeNumber + media.absoluteSeasonOffset
+                const absVariants = [this.zeropad(absEp), `e${absEp}`, `ep${absEp}`]
+                allTitles.forEach(title => {
+                    absVariants.forEach(ep => {
+                        let q = `${title} ${ep}`
+                        queries.push(addResolution(q))
+                        queries.push(addResolution(`${q} -S0`))
+                    })
+                })
             }
         }
 
-        // Add "-S0" variant for each query
-        const finalQueries: string[] = []
-        for (const q of queryStr) {
-            finalQueries.push(q)
-            finalQueries.push(q + " -S0")
-        }
-
-        return finalQueries
+        return [...new Set(queries)]
     }
 
     private formatQuality(quality: string): string {
@@ -826,114 +808,13 @@ class Provider {
         return String(v).padStart(2, "0")
     }
 
-    private buildEpisodeString(opts: AnimeSmartSearchOptions): string {
-        if (opts.episodeNumber === -1) return ""
-        const pEp = this.zeropad(opts.episodeNumber)
-        // e.g. ("01"|"e1") -S0
-        return `("${pEp}"|"e${opts.episodeNumber}") -S0`
-    }
 
-    private buildBatchGroup(media: AnimeSmartSearchOptions["media"]): string {
-        const epCount = media.episodeCount || 0
-        const parts = [
-            `"${this.zeropad(1)} - ${this.zeropad(epCount)}"`,
-            `"${this.zeropad(1)} ~ ${this.zeropad(epCount)}"`,
-            `"Batch"`,
-            `"Complete"`,
-            `"+ OVA"`,
-            `"+ Specials"`,
-            `"+ Special"`,
-            `"Seasons"`,
-            `"Parts"`,
-        ]
-        return `(${parts.join("|")})`
-    }
 
-    private extractSeasonNumber(title: string): [number, string] {
-        const match = title.match(/\b(season|s)\s*(\d{1,2})\b/i)
-        if (match && match[2]) {
-            const cleanTitle = title.replace(match[0], "").trim()
-            return [parseInt(match[2]), cleanTitle]
-        }
-        return [0, title]
-    }
 
-    private buildTitleString(opts: AnimeSmartSearchOptions): string {
-        const media = opts.media
-        const romTitle = this.sanitizeTitle(media.romajiTitle || "")
-        const engTitle = this.sanitizeTitle(media.englishTitle || "")
 
-        let season = 0
-        let titles: string[] = []
 
-        // create titles by extracting season/part info
-        this.getAllTitles(media).forEach(title => {
-            const [s, cTitle] = this.extractSeasonNumber(title)
-            if (s !== 0) season = s
-            if (cTitle) titles.push(this.sanitizeTitle(cTitle))
-        })
 
-        // Check season from synonyms, only update season if it's still 0
-        if (season === 0) {
-            (media.synonyms || []).forEach(synonym => {
-                const [s, _] = this.extractSeasonNumber(synonym)
-                if (s !== 0) season = s
-            })
-        }
 
-        // add romaji and english titles to the title list
-        titles.push(romTitle)
-        if (engTitle) titles.push(engTitle)
-
-        // convert III and II to season
-        if (season === 0) {
-            if (/\siii\b/i.test(romTitle) || (engTitle && /\siii\b/i.test(engTitle))) season = 3
-            else if (/\sii\b/i.test(romTitle) || (engTitle && /\sii\b/i.test(engTitle))) season = 2
-        }
-
-        // also, split titles by colon
-        [romTitle, engTitle].filter(Boolean).forEach(title => {
-            const split = title.split(":")
-            if (split.length > 1 && split[0].length > 8) {
-                titles.push(split[0])
-            }
-        })
-
-        // clean titles
-        titles = titles.map(title => {
-            let clean = title.replace(/:/g, " ").replace(/-/g, " ").trim()
-            clean = clean.replace(/\s+/g, " ").toLowerCase()
-            if (season !== 0) {
-                clean = clean.replace(/\siii\b/gi, "").replace(/\sii\b/gi, "")
-            }
-            return clean.trim()
-        })
-
-        titles = [...new Set(titles.filter(Boolean))] // Unique, non-empty titles
-
-        let shortestTitle = titles.reduce((shortest, current) =>
-            current.length < shortest.length ? current : shortest, titles[0] || "")
-
-        // Season part
-        let seasonBuff = ""
-        if (season > 0) {
-            const pS = this.zeropad(season)
-            seasonBuff = [
-                `"${shortestTitle} season ${season}"`,
-                `"${shortestTitle} season ${pS}"`,
-                `"${shortestTitle} s${season}"`,
-                `"${shortestTitle} s${pS}"`,
-            ].join(" | ")
-        }
-
-        let qTitles = `(${titles.map(t => `"${t}"`).join(" | ")}`
-        if (seasonBuff) {
-            qTitles += ` | ${seasonBuff}`
-        }
-        qTitles += ")"
-
-        return qTitles
-    }
 
     public async getLatest(): Promise<AnimeTorrent[]> {
         // “Latest” varies by source. Use AnimeTosho latest-ish + Nyaa empty query as a cheap fallback.
