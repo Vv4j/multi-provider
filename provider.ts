@@ -89,6 +89,30 @@ function getMeta(t: AnimeTorrent): ProviderResultMeta | undefined {
     return (t as any).__meta;
 }
 
+// Quality definitions
+const qualityOrder: Record<string, number> = {
+    "BluRay REMUX": 9,
+    "BluRay": 8,
+    "WEB-DL": 7,
+    "WEBRip": 6,
+    "HDRip": 5,
+    "HC HD-Rip": 4,
+    "DVDRip": 3,
+    "HDTV": 2,
+    "Unknown": 1,
+};
+
+const excludedQualities = ["CAM", "TS", "TC", "SCR"];
+
+function getRegexScore(name: string): number {
+    // Simple check for known good release groups
+    const goodGroups = ["SubsPlease", "Erai-raws", "HorribleSubs", "AnimeKaizoku", "Aergia", "smol", "Vodes"];
+    for (const g of goodGroups) {
+        if (name.includes(g)) return 1;
+    }
+    return 0;
+}
+
 // ---------------------------
 // Real-Debrid Probe (Optional)
 // ---------------------------
@@ -701,7 +725,7 @@ class Provider {
     public async smartSearch(options: AnimeSmartSearchOptions): Promise<AnimeTorrent[]> {
         // For smart search, use either user query or media title
         const q = options.query || options.media.romajiTitle || options.media.englishTitle || "";
-        return this.runAggregate(q, options.media, true);
+        return this.runAggregate(q, options.media, true, options.episodeNumber, options.batch);
     }
 
     public async getTorrentInfoHash(torrent: AnimeTorrent): Promise<string> {
@@ -754,7 +778,7 @@ class Provider {
         return "";
     }
 
-    private async runAggregate(query: string, media: AnimeSearchOptions["media"], isSmart: boolean): Promise<AnimeTorrent[]> {
+    private async runAggregate(query: string, media: AnimeSearchOptions["media"], isSmart: boolean, episodeNumber?: number, batch?: boolean): Promise<AnimeTorrent[]> {
         const enableSeaDex = boolPref("enableSeaDex", true);
         const enableAnimeTosho = boolPref("enableAnimeTosho", true);
         const enableNyaa = boolPref("enableNyaa", true);
@@ -778,9 +802,15 @@ class Provider {
 
         const settled = await Promise.allSettled(tasks);
 
-        const merged = settled
+        let merged = settled
             .filter(r => r.status === "fulfilled")
             .flatMap((r: any) => r.value as AnimeTorrent[]);
+
+        // Filter by episode if smart search and episode specified
+        if (isSmart && episodeNumber !== undefined && episodeNumber > 0 && !batch) {
+            const epStr = episodeNumber.toString().padStart(2, '0');
+            merged = merged.filter(t => t.episodeNumber === episodeNumber || t.name.toLowerCase().includes(epStr));
+        }
 
         return this.finalize(merged);
     }
@@ -798,6 +828,9 @@ class Provider {
         }
 
         let torrents = [...map.values()];
+
+        // Filter out excluded qualities
+        torrents = torrents.filter(t => !excludedQualities.includes(extractQuality(t.name)));
 
         // 2) Initial sort (so “top N” for scraping/probing makes sense)
         torrents.sort((a, b) => this.compare(a, b));
@@ -832,8 +865,22 @@ class Provider {
         const ma = getMeta(a)
         const mb = getMeta(b)
 
-        // For Real-Debrid users, provider quality order matters most, not seeders
-        // Priority: SeaDex > AnimeTosho > AniLiberty > Nyaa > ACG.RIP > RuTracker
+        // 1) Quality (higher score first)
+        const qa = qualityOrder[extractQuality(a.name)] || 1;
+        const qb = qualityOrder[extractQuality(b.name)] || 1;
+        if (qa !== qb) return qb - qa;
+
+        // 2) Resolution (higher first)
+        const ra = normalizeResolution(a.resolution || "")
+        const rb = normalizeResolution(b.resolution || "")
+        if (ra !== rb) return rb - ra
+
+        // 3) Regex Patterns (good groups first)
+        const rsa = getRegexScore(a.name);
+        const rsb = getRegexScore(b.name);
+        if (rsa !== rsb) return rsb - rsa;
+
+        // 4) Provider priority: SeaDex > AnimeTosho > AniLiberty > Nyaa > ACG.RIP > RuTracker
         const providerPriority: Record<ProviderKey, number> = {
             seadex: 6,
             animetosho: 5,
@@ -847,27 +894,23 @@ class Provider {
         const pb = providerPriority[mb?.provider || "nyaa"] || 0;
         if (pa !== pb) return pb - pa;
 
-        // 2) Best release flag (high quality indicator)
-        const ba = a.isBestRelease ? 1 : 0
-        const bb = b.isBestRelease ? 1 : 0
-        if (ba !== bb) return bb - ba
+        // 5) Size (larger first)
+        if (a.size !== b.size) return b.size - a.size;
 
-        // 3) Resolution (higher first — quality indicator)
-        const ra = normalizeResolution(a.resolution || "")
-        const rb = normalizeResolution(b.resolution || "")
-        if (ra !== rb) return rb - ra
+        // 6) Seeders (higher first)
+        if (a.seeders !== b.seeders) return b.seeders - a.seeders;
 
-        // 4) Date (newer first)
+        // 7) Date (newer first)
         const dtA = safeDateMs(a.date || "")
         const dtB = safeDateMs(b.date || "")
         if (dtA !== dtB) return dtB - dtA
 
-        // 5) InfoHash/Magnet availability (prefer those with both)
+        // 8) InfoHash/Magnet availability (prefer those with both)
         const ha = (a.infoHash ? 1 : 0) + (a.magnetLink ? 1 : 0);
         const hb = (b.infoHash ? 1 : 0) + (b.magnetLink ? 1 : 0);
         if (ha !== hb) return hb - ha;
 
-        // 6) Alphabetical (stable sort)
+        // 9) Alphabetical (stable sort)
         return (a.name || "").localeCompare(b.name || "")
     }
 }
