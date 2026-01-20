@@ -279,7 +279,7 @@ interface AnimeToshoTorrent {
     num_files: number;
 }
 
-async function animetoshoSearch(query: string): Promise<AnimeTorrent[]> {
+async function animetoshoSearch(query: string, media?: any): Promise<AnimeTorrent[]> {
     const url = `https://feed.animetosho.org/json?q=${encodeURIComponent(query)}`;
     const res = await fetch(url);
     if (!res.ok) return [];
@@ -293,6 +293,9 @@ async function animetoshoSearch(query: string): Promise<AnimeTorrent[]> {
         let ep = -1;
         if (!isBatch && md.episode_number && md.episode_number.length === 1) {
             ep = parseInt(md.episode_number[0], 10) || -1;
+            if (media && media.absoluteSeasonOffset && media.absoluteSeasonOffset > 0 && ep >= media.absoluteSeasonOffset) {
+                ep = ep - media.absoluteSeasonOffset;
+            }
         }
         if (isBatch) ep = -1;
 
@@ -380,7 +383,7 @@ function nyaaSizeToBytes(size: string): number {
     return v;
 }
 
-async function nyaaSearch(query: string, category = "1_2", baseUrl = "https://nyaa.si"): Promise<AnimeTorrent[]> {
+async function nyaaSearch(query: string, category = "1_2", baseUrl = "https://nyaa.si", media?: any): Promise<AnimeTorrent[]> {
     const url = `${baseUrl.replace(/\/$/, "")}/?page=rss&q=${encodeURIComponent(query)}&c=${category}&f=0&s=seeders&o=desc`;
     const res = await fetch(url);
     if (!res.ok) return [];
@@ -396,6 +399,9 @@ async function nyaaSearch(query: string, category = "1_2", baseUrl = "https://ny
         let ep = -1;
         if (md.episode_number && md.episode_number.length >= 1) {
             ep = parseInt(md.episode_number[0], 10) || -1;
+            if (media && media.absoluteSeasonOffset && media.absoluteSeasonOffset > 0 && ep >= media.absoluteSeasonOffset) {
+                ep = ep - media.absoluteSeasonOffset;
+            }
         }
 
         // batch guess
@@ -427,7 +433,7 @@ async function nyaaSearch(query: string, category = "1_2", baseUrl = "https://ny
 }
 
 // ---- ACG.RIP ----
-async function acgRipSearch(query: string): Promise<AnimeTorrent[]> {
+async function acgRipSearch(query: string, media?: any): Promise<AnimeTorrent[]> {
     const base = "https://acg.rip";
     const url = `${base}/?term=${encodeURIComponent(query)}`;
     const res = await fetch(url);
@@ -503,7 +509,7 @@ function acgRipParseSize(sizeStr: string): number {
 }
 
 // ---- AniLiberty ----
-async function aniLibertySearch(query: string): Promise<AnimeTorrent[]> {
+async function aniLibertySearch(query: string, media?: any): Promise<AnimeTorrent[]> {
     const api = "https://aniliberty.top/api/v1";
     const headers: any = { accept: "application/json", "X-CSRF-TOKEN": "seanime" };
 
@@ -535,6 +541,10 @@ async function aniLibertySearch(query: string): Promise<AnimeTorrent[]> {
             const desc = t?.description || "";
             const isBatch = aniLibertyIsBatch(desc);
             const episode = aniLibertyExtractEpisode(desc);
+            let ep = episode;
+            if (media && media.absoluteSeasonOffset && media.absoluteSeasonOffset > 0 && ep >= media.absoluteSeasonOffset) {
+                ep = ep - media.absoluteSeasonOffset;
+            }
 
             out.push(tagProvider({
                 name: `${title} [${resolution}]`,
@@ -550,7 +560,7 @@ async function aniLibertySearch(query: string): Promise<AnimeTorrent[]> {
                 magnetLink: t?.magnet || (t?.hash ? `magnet:?xt=urn:btih:${t?.hash}` : ""),
                 resolution,
                 isBatch,
-                episodeNumber: isBatch ? -1 : episode,
+                episodeNumber: isBatch ? -1 : ep,
                 releaseGroup: "AniLiberty",
                 isBestRelease: aniLibertyIsBest(t),
                 confirmed: true
@@ -615,7 +625,7 @@ function rutrackerSizeToBytes(sizeStr: string): number {
     return Math.floor(value * (scales[unit] || 1));
 }
 
-async function rutrackerSearch(query: string): Promise<AnimeTorrent[]> {
+async function rutrackerSearch(query: string, media?: any): Promise<AnimeTorrent[]> {
     const safeQuery = encodeURIComponent(query.trim());
     const url = `https://torapi.vercel.app/api/search/title/rutracker?query=${safeQuery}&page=0`;
     const res = await fetch(url);
@@ -816,8 +826,8 @@ class Provider {
         const enableNyaa = boolPref("enableNyaa", true);
 
         const tasks: Promise<AnimeTorrent[]>[] = [];
-        if (enableAnimeTosho) tasks.push(animetoshoSearch(""));
-        if (enableNyaa) tasks.push(nyaaSearch("", "1_2", "https://nyaa.si"));
+        if (enableAnimeTosho) tasks.push(animetoshoSearch("", null));
+        if (enableNyaa) tasks.push(nyaaSearch("", "1_2", "https://nyaa.si", null));
 
         const results = (await Promise.allSettled(tasks))
             .filter(r => r.status === "fulfilled")
@@ -835,8 +845,12 @@ class Provider {
     public async smartSearch(options: AnimeSmartSearchOptions): Promise<AnimeTorrent[]> {
         // For smart search, build better queries using AnimeTosho-style logic
         const queries = this.buildSmartSearchQueries(options);
-        const q = queries[0] || options.media.romajiTitle || options.media.englishTitle || "";
-        return this.runAggregate(q, options.media, true, options.episodeNumber, options.batch);
+        let allResults: AnimeTorrent[] = [];
+        for (const q of queries) {
+            const results = await this.runAggregate(q, options.media, true, options.episodeNumber, options.batch);
+            allResults = allResults.concat(results);
+        }
+        return this.finalize(allResults);
     }
 
     public async getTorrentInfoHash(torrent: AnimeTorrent): Promise<string> {
@@ -905,11 +919,11 @@ class Provider {
             tasks.push(seadexFetch(media.id, title));
         }
 
-        if (enableAnimeTosho) tasks.push(animetoshoSearch(query));
-        if (enableNyaa) tasks.push(nyaaSearch(query, "1_2", "https://nyaa.si"));
-        if (enableAcgRip) tasks.push(acgRipSearch(query));
-        if (enableAniLiberty) tasks.push(aniLibertySearch(query));
-        if (enableRuTracker) tasks.push(rutrackerSearch(query));
+        if (enableAnimeTosho) tasks.push(animetoshoSearch(query, media));
+        if (enableNyaa) tasks.push(nyaaSearch(query, "1_2", "https://nyaa.si", media));
+        if (enableAcgRip) tasks.push(acgRipSearch(query, media));
+        if (enableAniLiberty) tasks.push(aniLibertySearch(query, media));
+        if (enableRuTracker) tasks.push(rutrackerSearch(query, media));
 
         const settled = await Promise.allSettled(tasks);
 
@@ -919,8 +933,12 @@ class Provider {
 
         // Filter by episode if smart search and episode specified
         if (isSmart && episodeNumber !== undefined && episodeNumber > 0 && !batch) {
-            const epStr = episodeNumber.toString().padStart(2, '0');
-            merged = merged.filter(t => t.episodeNumber === episodeNumber || t.name.toLowerCase().includes(epStr));
+            let targetEp = episodeNumber;
+            if (media.absoluteSeasonOffset && media.absoluteSeasonOffset > 0 && episodeNumber >= media.absoluteSeasonOffset) {
+                targetEp = episodeNumber - media.absoluteSeasonOffset;
+            }
+            const epStr = targetEp.toString().padStart(2, '0');
+            merged = merged.filter(t => t.episodeNumber === targetEp || t.name.toLowerCase().includes(epStr));
         }
 
         return this.finalize(merged);
