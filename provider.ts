@@ -755,6 +755,7 @@ class Provider {
             allTitles.forEach(title => {
                 batchTerms.forEach(term => {
                     queries.push(addResolution(`${title} ${term}`))
+                    queries.push(addResolution(`${title} - ${term}`))
                 })
             })
         } else {
@@ -765,20 +766,13 @@ class Provider {
                     let q = `${title} ${ep}`
                     queries.push(addResolution(q))
                     queries.push(addResolution(`${q} -S0`))
+                    // add with dash
+                    let q2 = `${title} - ${ep}`
+                    queries.push(addResolution(q2))
+                    queries.push(addResolution(`${q2} -S0`))
                 })
             })
-            // Absolute episodes if available
-            if (media.absoluteSeasonOffset && media.absoluteSeasonOffset > 0) {
-                const absEp = episodeNumber + media.absoluteSeasonOffset
-                const absVariants = [this.zeropad(absEp), `e${absEp}`, `ep${absEp}`]
-                allTitles.forEach(title => {
-                    absVariants.forEach(ep => {
-                        let q = `${title} ${ep}`
-                        queries.push(addResolution(q))
-                        queries.push(addResolution(`${q} -S0`))
-                    })
-                })
-            }
+
         }
 
         return [...new Set(queries)]
