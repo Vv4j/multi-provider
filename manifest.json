@@ -19,49 +19,49 @@
         "name": "enableSeaDex",
         "label": "Enable SeaDex (highest priority - best releases)",
         "type": "boolean",
-        "default": true
+        "default": "true"
       },
       {
         "name": "enableAnimeTosho",
         "label": "Enable AnimeTosho (high quality, good magnet availability)",
         "type": "boolean",
-        "default": true
+        "default": "true"
       },
       {
         "name": "enableAniLiberty",
         "label": "Enable AniLiberty (good metadata, API-based)",
         "type": "boolean",
-        "default": true
+        "default": "true"
       },
       {
         "name": "enableNyaa",
         "label": "Enable Nyaa (broad coverage, may require scraping)",
         "type": "boolean",
-        "default": true
+        "default": "true"
       },
       {
         "name": "enableAcgRip",
         "label": "Enable ACG.RIP (alternative source)",
         "type": "boolean",
-        "default": true
+        "default": "true"
       },
       {
         "name": "enableRuTracker",
         "label": "Enable RuTracker via TorAPI (Russian tracker, lowest priority)",
         "type": "boolean",
-        "default": false
+        "default": "false"
       },
       {
         "name": "autoScrapeMagnets",
         "label": "Auto-scrape magnet links from pages (for RD compatibility)",
         "type": "boolean",
-        "default": true
+        "default": "true"
       },
       {
         "name": "magnetScrapeLimit",
         "label": "Max torrent pages to scrape per search (higher = slower but more complete)",
         "type": "number",
-        "default": 30
+        "default": "30"
       }
     ]
   }
