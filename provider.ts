@@ -436,15 +436,17 @@ async function acgRipSearch(query: string): Promise<AnimeTorrent[]> {
         const ts = dateEl.attr("datetime") || "";
 
         let dateIso = "";
-        try {
-            const d = new Date(ts);
-            if (!isNaN(d.getTime())) dateIso = d.toISOString();
-        } catch { }
+        if (ts) {
+            try {
+                const d = new Date(parseInt(ts) * 1000);
+                if (!isNaN(d.getTime())) dateIso = d.toISOString();
+            } catch { }
+        }
 
         torrents.push(tagProvider({
             name,
             date: dateIso,
-            size: 0,
+            size: acgRipParseSize(sizeStr),
             formattedSize: sizeStr,
             seeders: -1,
             leechers: -1,
@@ -463,6 +465,17 @@ async function acgRipSearch(query: string): Promise<AnimeTorrent[]> {
     });
 
     return torrents;
+}
+
+function acgRipParseSize(sizeStr: string): number {
+    const sizeMatch = sizeStr.match(/([\d\.]+)\s*(GB|MB|KB)/i);
+    if (!sizeMatch) return 0;
+    const size = parseFloat(sizeMatch[1]);
+    const unit = sizeMatch[2].toUpperCase();
+    if (unit === "GB") return Math.round(size * 1024 * 1024 * 1024);
+    if (unit === "MB") return Math.round(size * 1024 * 1024);
+    if (unit === "KB") return Math.round(size * 1024);
+    return 0;
 }
 
 // ---- AniLiberty ----
@@ -495,12 +508,15 @@ async function aniLibertySearch(query: string): Promise<AnimeTorrent[]> {
         for (const t of data || []) {
             const title = (r?.name?.english || r?.name?.main || t?.label || "AniLiberty").trim();
             const resolution = t?.quality?.description || "";
+            const desc = t?.description || "";
+            const isBatch = aniLibertyIsBatch(desc);
+            const episode = aniLibertyExtractEpisode(desc);
 
             out.push(tagProvider({
                 name: `${title} [${resolution}]`,
                 date: t?.created_at || "",
                 size: t?.size || 0,
-                formattedSize: "",
+                formattedSize: aniLibertyBytesToHuman(t?.size || 0),
                 seeders: t?.seeders ?? -1,
                 leechers: t?.leechers ?? -1,
                 downloadCount: t?.completed_times ?? 0,
@@ -509,16 +525,43 @@ async function aniLibertySearch(query: string): Promise<AnimeTorrent[]> {
                 infoHash: t?.hash || "",
                 magnetLink: t?.magnet || (t?.hash ? `magnet:?xt=urn:btih:${t?.hash}` : ""),
                 resolution,
-                isBatch: /\d+\s*[-~]\s*\d+|batch|complete|ova/i.test(String(t?.description || "")),
-                episodeNumber: -1,
+                isBatch,
+                episodeNumber: isBatch ? -1 : episode,
                 releaseGroup: "AniLiberty",
-                isBestRelease: false,
+                isBestRelease: aniLibertyIsBest(t),
                 confirmed: true
             }, "aniliberty"));
         }
     }
 
     return out;
+}
+
+function aniLibertyIsBatch(desc: string): boolean {
+    if (!desc) return false;
+    return /\d+\s*[-~]\s*\d+|batch|complete|ova/i.test(desc);
+}
+
+function aniLibertyExtractEpisode(desc: string): number {
+    if (!desc) return -1;
+    const match = desc.match(/\b(\d{1,3})\b/);
+    return match ? parseInt(match[1], 10) : -1;
+}
+
+function aniLibertyIsBest(t: any): boolean {
+    return (
+        t?.quality?.description === "1080p" &&
+        (t?.seeders || 0) > 50 &&
+        t?.codec?.value !== "xvid"
+    );
+}
+
+function aniLibertyBytesToHuman(bytes: number): string {
+    if (!bytes) return "";
+    const k = 1024;
+    const sizes = ["B", "KiB", "MiB", "GiB", "TiB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return (bytes / Math.pow(k, i)).toFixed(2) + " " + sizes[i];
 }
 
 // ---- RuTracker (TorAPI) ----
