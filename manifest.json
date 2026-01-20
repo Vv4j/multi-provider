@@ -1,0 +1,68 @@
+{
+  "id": "multi-aggregator",
+  "name": "Multi Aggregator (Real-Debrid Optimized)",
+  "version": "1.0.0",
+  "manifestURI": "https://raw.githubusercontent.com/<you>/<repo>/main/manifest.json",
+  "language": "typescript",
+  "type": "anime-torrent-provider",
+  "description": "Aggregates multiple quality torrent providers (optimized for Real-Debrid). Priority: SeaDex > AnimeTosho > AniLiberty > Nyaa > ACG.RIP > RuTracker. Prioritizes InfoHash/Magnet links, clean metadata, and deduplication.",
+  "author": "<you>",
+  "icon": "https://raw.githubusercontent.com/<you>/<repo>/main/icon.png",
+  "lang": "multi",
+  "payloadURI": "https://raw.githubusercontent.com/<you>/<repo>/main/provider.ts",
+  "isDevelopment": false,
+  "userConfig": {
+    "requiresConfig": false,
+    "version": 1,
+    "fields": [
+      {
+        "name": "enableSeaDex",
+        "label": "Enable SeaDex (highest priority - best releases)",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "name": "enableAnimeTosho",
+        "label": "Enable AnimeTosho (high quality, good magnet availability)",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "name": "enableAniLiberty",
+        "label": "Enable AniLiberty (good metadata, API-based)",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "name": "enableNyaa",
+        "label": "Enable Nyaa (broad coverage, may require scraping)",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "name": "enableAcgRip",
+        "label": "Enable ACG.RIP (alternative source)",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "name": "enableRuTracker",
+        "label": "Enable RuTracker via TorAPI (Russian tracker, lowest priority)",
+        "type": "boolean",
+        "default": false
+      },
+      {
+        "name": "autoScrapeMagnets",
+        "label": "Auto-scrape magnet links from pages (for RD compatibility)",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "name": "magnetScrapeLimit",
+        "label": "Max torrent pages to scrape per search (higher = slower but more complete)",
+        "type": "number",
+        "default": 30
+      }
+    ]
+  }
+}

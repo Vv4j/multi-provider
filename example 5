@@ -1,0 +1,162 @@
+{
+  "id": "rutracker-torapi",
+  "name": "RuTracker",
+  "version": "1.0.4",
+  "manifestURI": "https://raw.githubusercontent.com/cerXXXX/RuTrackerProvider-seanime-extension/refs/heads/main/manifest.json",
+  "language": "typescript",
+  "type": "anime-torrent-provider",
+  "description": "Поиск аниме-торрентов на RuTracker через TorAPI",
+  "author": "cerXXXX",
+  "icon": "https://raw.githubusercontent.com/cerXXXX/RuTrackerProvider-seanime-extension/refs/heads/main/favicon.ico",
+  "lang": "ru",
+  "payloadURI": "https://raw.githubusercontent.com/cerXXXX/RuTrackerProvider-seanime-extension/refs/heads/main/index.ts"
+}
+
+/// <reference path="./anime-torrent-provider.d.ts" />
+
+interface TorApiResult {
+    Id: string;
+    Name: string;
+    Size: string;
+    Seeds: number;
+    Peers: number;
+    Date: string; // Формат "25-Dec-25" или подобный от API
+    Category: string;
+    Url: string;
+    Torrent: string;
+    Download_Count: number;
+}
+
+interface TorApiDetail {
+    Magnet: string;
+    Hash: string;
+}
+
+class Provider {
+
+    async getSettings(): Promise<AnimeProviderSettings> {
+        return {
+            canSmartSearch: true,
+            smartSearchFilters: ["batch", "episodeNumber", "resolution", "query"],
+            supportsAdult: false,
+            type: "main",
+        };
+    }
+
+    async search(opts: AnimeSearchOptions): Promise<AnimeTorrent[]> {
+        console.log(`[RuTracker] Поиск: ${opts.query}`);
+        return this.fetchResults(opts.query);
+    }
+
+    async smartSearch(opts: AnimeSmartSearchOptions): Promise<AnimeTorrent[]> {
+        // Если пользователь изменил запрос в окне Smart Search, используем его, иначе из медиа
+        const query = opts.query || opts.media.romajiTitle || opts.media.englishTitle || "";
+        console.log(`[RuTracker] SmartSearch: ${query} (Эпизод: ${opts.episodeNumber})`);
+
+        let results = await this.fetchResults(query);
+
+        // Если это поиск конкретной серии и не "batch", можно добавить простую фильтрацию по названию
+        if (opts.episodeNumber > 0 && !opts.batch) {
+            const epStr = opts.episodeNumber.toString().padStart(2, '0');
+            results = results.filter(t => t.name.includes(epStr));
+        }
+
+        return results;
+    }
+
+    async getTorrentInfoHash(torrent: AnimeTorrent): Promise<string> {
+        return torrent.infoHash || "";
+    }
+
+    async getTorrentMagnetLink(torrent: AnimeTorrent): Promise<string> {
+        return torrent.magnetLink || "";
+    }
+
+    async getLatest(): Promise<AnimeTorrent[]> {
+        // RuTracker не очень удобен для "последних" без конкретного запроса,
+        // поэтому отдаем пустой список или базовый запрос "Аниме"
+        return this.fetchResults("Аниме 2025");
+    }
+
+    // --- Вспомогательные методы ---
+
+    private parseSizeToBytes(sizeStr: string): number {
+        if (!sizeStr) return 0;
+        const cleanStr = sizeStr.trim().toUpperCase();
+        const match = cleanStr.match(/([\d.]+)\s*([A-Z]*)/);
+        if (!match) return 0;
+
+        const value = parseFloat(match[1]);
+        const unit = match[2];
+        const scales: { [key: string]: number } = {
+            'B': 1, 'KB': 1024, 'MB': 1048576, 'GB': 1073741824, 'TB': 1099511627776
+        };
+        return Math.floor(value * (scales[unit] || 1));
+    }
+
+    private formatDate(dateStr: string): string {
+        try {
+            // Превращаем дату от API в RFC3339 (ISO)
+            // Если API возвращает странный формат, fallback на текущую дату
+            const d = new Date(dateStr);
+            return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
+        } catch {
+            return new Date().toISOString();
+        }
+    }
+
+    private async fetchResults(query: string): Promise<AnimeTorrent[]> {
+        if (!query) return [];
+
+        try {
+            const safeQuery = encodeURIComponent(query.trim());
+            const baseUrl = `https://torapi.vercel.app/api/search/title/rutracker?query=${safeQuery}&page=0`;
+
+            const response = await fetch(baseUrl);
+            if (!response.ok) return [];
+
+            const data = await response.json() as TorApiResult[];
+            if (!Array.isArray(data)) return [];
+
+            const animeResults = data
+                .filter(item => item.Category && (item.Category.includes('Аниме') || item.Category.includes('Онгоинги')))
+                .slice(0, 10);
+
+            const results = await Promise.all(animeResults.map(async (item) => {
+                try {
+                    const detailRes = await fetch(`https://torapi.vercel.app/api/search/id/rutracker?query=${item.Id}`);
+                    const detailsJson = await detailRes.json();
+                    const details: TorApiDetail = detailsJson[0];
+
+                    if (!details || !details.Magnet) return null;
+
+                    // Возвращаем объект в строгом соответствии с интерфейсом AnimeTorrent
+                    return {
+                        name: item.Name,
+                        date: this.formatDate(item.Date),
+                        size: this.parseSizeToBytes(item.Size),
+                        formattedSize: item.Size,
+                        seeders: Number(item.Seeds) || 0,
+                        leechers: Number(item.Peers || 0),
+                        downloadCount: Number(item.Download_Count || 0),
+                        link: item.Url || "",
+                        magnetLink: details.Magnet,
+                        infoHash: details.Hash,
+                        isBatch: true, // обычно на rutracker аниме выкладываются сезонами
+                        episodeNumber: -1,
+                        isBestRelease: false,
+                        confirmed: false
+                    } as AnimeTorrent;
+                } catch {
+                    return null;
+                }
+            }));
+
+            return results.filter(r => r !== null) as AnimeTorrent[];
+
+        } catch (error) {
+            console.error('[RuTracker] fetchResults error:', error);
+            return [];
+        }
+    }
+}
