@@ -700,6 +700,241 @@ class Provider {
         };
     }
 
+    private extractQuality(name: string): string {
+        const lower = name.toLowerCase();
+        if (lower.includes("remux")) return "BluRay REMUX";
+        if (lower.includes("bluray") || lower.includes("bdrip") || lower.includes("bd")) return "BluRay";
+        if (lower.includes("web-dl")) return "WEB-DL";
+        if (lower.includes("webrip")) return "WEBRip";
+        if (lower.includes("hdrip")) return "HDRip";
+        if (lower.includes("hc") && lower.includes("hd-rip")) return "HC HD-Rip";
+        if (lower.includes("dvdrip")) return "DVDRip";
+        if (lower.includes("hdtv")) return "HDTV";
+        if (lower.includes("cam")) return "CAM";
+        if (lower.includes("ts")) return "TS";
+        if (lower.includes("tc")) return "TC";
+        if (lower.includes("scr")) return "SCR";
+        return "Unknown";
+    }
+
+    private getRegexScore(name: string): number {
+        // Simple check for known good release groups
+        const goodGroups = ["SubsPlease", "Erai-raws", "HorribleSubs", "AnimeKaizoku", "Aergia", "smol", "Vodes"];
+        for (const g of goodGroups) {
+            if (name.includes(g)) return 1;
+        }
+        return 0;
+    }
+
+    private buildSmartSearchQueries(opts: AnimeSmartSearchOptions): string[] {
+        const { media, batch, episodeNumber, resolution } = opts
+        const hasSingleEpisode = media.episodeCount === 1 || media.format === "MOVIE"
+
+        let queryStr: string[] = []
+        const allTitles = this.getAllTitles(media)
+
+        if (hasSingleEpisode) {
+            let str = ""
+            // 1. Build a query string
+            const qTitles = `(${allTitles.map(t => this.sanitizeTitle(t)).join(" | ")})`
+            str += qTitles
+
+            // 2. Add resolution
+            if (resolution) {
+                str += " " + resolution
+            }
+            queryStr = [str]
+
+        } else {
+            if (!batch) { // Single episode search
+                const qTitles = this.buildTitleString(opts)
+                const qEpisodes = this.buildEpisodeString(opts)
+
+                let str = ""
+                // 1. Add titles
+                str += qTitles
+                // 2. Add episodes
+                if (qEpisodes) {
+                    str += " " + qEpisodes
+                }
+                // 3. Add resolution
+                if (resolution) {
+                    str += " " + resolution
+                }
+
+                queryStr.push(str)
+
+                // If we can also search for absolute episodes
+                if (media.absoluteSeasonOffset && media.absoluteSeasonOffset > 0) {
+                    const metadata = $habari.parse(media.romajiTitle || "")
+                    let absoluteQueryStr = metadata.title || ""
+
+                    const ep = episodeNumber + media.absoluteSeasonOffset
+                    absoluteQueryStr += ` ("${ep}"|"e${ep}"|"ep${ep}")`
+
+                    if (resolution) {
+                        absoluteQueryStr += " " + resolution
+                    }
+                    // Combine original query with absolute query
+                    queryStr = [`(${absoluteQueryStr}) | (${str})`]
+                }
+
+            } else { // Batch search
+                let str = `(${media.romajiTitle})`
+                if (media.englishTitle) {
+                    str = `(${media.romajiTitle} | ${media.englishTitle})`
+                }
+                str += " " + this.buildBatchGroup(media)
+                if (resolution) {
+                    str += " " + resolution
+                }
+                queryStr = [str]
+            }
+        }
+
+        // Add "-S0" variant for each query
+        const finalQueries: string[] = []
+        for (const q of queryStr) {
+            finalQueries.push(q)
+            finalQueries.push(q + " -S0")
+        }
+
+        return finalQueries
+    }
+
+    private formatQuality(quality: string): string {
+        if (!quality) return ""
+        return quality.replace(/p$/i, "")
+    }
+
+    private sanitizeTitle(t: string): string {
+        t = t.replace(/-/g, " ") // Replace hyphens with spaces
+        t = t.replace(/[^a-zA-Z0-9\s]/g, "") // Remove non-alphanumeric/space chars
+        t = t.replace(/\s+/g, " ") // Trim large spaces
+        return t.trim()
+    }
+
+    private getAllTitles(media: AnimeSmartSearchOptions["media"]): string[] {
+        return [
+            media.romajiTitle,
+            media.englishTitle,
+            ...(media.synonyms || []),
+        ].filter(Boolean) as string[] // Filter out null/undefined/empty strings
+    }
+
+    private zeropad(v: number | string): string {
+        return String(v).padStart(2, "0")
+    }
+
+    private buildEpisodeString(opts: AnimeSmartSearchOptions): string {
+        if (opts.episodeNumber === -1) return ""
+        const pEp = this.zeropad(opts.episodeNumber)
+        // e.g. ("01"|"e1") -S0
+        return `("${pEp}"|"e${opts.episodeNumber}") -S0`
+    }
+
+    private buildBatchGroup(media: AnimeSmartSearchOptions["media"]): string {
+        const epCount = media.episodeCount || 0
+        const parts = [
+            `"${this.zeropad(1)} - ${this.zeropad(epCount)}"`,
+            `"${this.zeropad(1)} ~ ${this.zeropad(epCount)}"`,
+            `"Batch"`,
+            `"Complete"`,
+            `"+ OVA"`,
+            `"+ Specials"`,
+            `"+ Special"`,
+            `"Seasons"`,
+            `"Parts"`,
+        ]
+        return `(${parts.join("|")})`
+    }
+
+    private extractSeasonNumber(title: string): [number, string] {
+        const match = title.match(/\b(season|s)\s*(\d{1,2})\b/i)
+        if (match && match[2]) {
+            const cleanTitle = title.replace(match[0], "").trim()
+            return [parseInt(match[2]), cleanTitle]
+        }
+        return [0, title]
+    }
+
+    private buildTitleString(opts: AnimeSmartSearchOptions): string {
+        const media = opts.media
+        const romTitle = this.sanitizeTitle(media.romajiTitle || "")
+        const engTitle = this.sanitizeTitle(media.englishTitle || "")
+
+        let season = 0
+        let titles: string[] = []
+
+        // create titles by extracting season/part info
+        this.getAllTitles(media).forEach(title => {
+            const [s, cTitle] = this.extractSeasonNumber(title)
+            if (s !== 0) season = s
+            if (cTitle) titles.push(this.sanitizeTitle(cTitle))
+        })
+
+        // Check season from synonyms, only update season if it's still 0
+        if (season === 0) {
+            (media.synonyms || []).forEach(synonym => {
+                const [s, _] = this.extractSeasonNumber(synonym)
+                if (s !== 0) season = s
+            })
+        }
+
+        // add romaji and english titles to the title list
+        titles.push(romTitle)
+        if (engTitle) titles.push(engTitle)
+
+        // convert III and II to season
+        if (season === 0) {
+            if (/\siii\b/i.test(romTitle) || (engTitle && /\siii\b/i.test(engTitle))) season = 3
+            else if (/\sii\b/i.test(romTitle) || (engTitle && /\sii\b/i.test(engTitle))) season = 2
+        }
+
+        // also, split titles by colon
+        [romTitle, engTitle].filter(Boolean).forEach(title => {
+            const split = title.split(":")
+            if (split.length > 1 && split[0].length > 8) {
+                titles.push(split[0])
+            }
+        })
+
+        // clean titles
+        titles = titles.map(title => {
+            let clean = title.replace(/:/g, " ").replace(/-/g, " ").trim()
+            clean = clean.replace(/\s+/g, " ").toLowerCase()
+            if (season !== 0) {
+                clean = clean.replace(/\siii\b/gi, "").replace(/\sii\b/gi, "")
+            }
+            return clean.trim()
+        })
+
+        titles = [...new Set(titles.filter(Boolean))] // Unique, non-empty titles
+
+        let shortestTitle = titles.reduce((shortest, current) =>
+            current.length < shortest.length ? current : shortest, titles[0] || "")
+
+        // Season part
+        let seasonBuff = ""
+        if (season > 0) {
+            const pS = this.zeropad(season)
+            seasonBuff = [
+                `"${shortestTitle} season ${season}"`,
+                `"${shortestTitle} season ${pS}"`,
+                `"${shortestTitle} s${season}"`,
+                `"${shortestTitle} s${pS}"`,
+            ].join(" | ")
+        }
+
+        let qTitles = `(${titles.map(t => `"${t}"`).join(" | ")}`
+        if (seasonBuff) {
+            qTitles += ` | ${seasonBuff}`
+        }
+        qTitles += ")"
+
+        return qTitles
+    }
+
     public async getLatest(): Promise<AnimeTorrent[]> {
         // “Latest” varies by source. Use AnimeTosho latest-ish + Nyaa empty query as a cheap fallback.
         const enableAnimeTosho = boolPref("enableAnimeTosho", true);
@@ -723,8 +958,9 @@ class Provider {
     }
 
     public async smartSearch(options: AnimeSmartSearchOptions): Promise<AnimeTorrent[]> {
-        // For smart search, use either user query or media title
-        const q = options.query || options.media.romajiTitle || options.media.englishTitle || "";
+        // For smart search, build better queries using AnimeTosho-style logic
+        const queries = this.buildSmartSearchQueries(options);
+        const q = queries[0] || options.media.romajiTitle || options.media.englishTitle || "";
         return this.runAggregate(q, options.media, true, options.episodeNumber, options.batch);
     }
 
@@ -830,7 +1066,7 @@ class Provider {
         let torrents = [...map.values()];
 
         // Filter out excluded qualities
-        torrents = torrents.filter(t => !excludedQualities.includes(extractQuality(t.name)));
+        torrents = torrents.filter(t => !excludedQualities.includes(this.extractQuality(t.name)));
 
         // 2) Initial sort (so “top N” for scraping/probing makes sense)
         torrents.sort((a, b) => this.compare(a, b));
@@ -866,8 +1102,8 @@ class Provider {
         const mb = getMeta(b)
 
         // 1) Quality (higher score first)
-        const qa = qualityOrder[extractQuality(a.name)] || 1;
-        const qb = qualityOrder[extractQuality(b.name)] || 1;
+        const qa = qualityOrder[this.extractQuality(a.name)] || 1;
+        const qb = qualityOrder[this.extractQuality(b.name)] || 1;
         if (qa !== qb) return qb - qa;
 
         // 2) Resolution (higher first)
@@ -876,8 +1112,8 @@ class Provider {
         if (ra !== rb) return rb - ra
 
         // 3) Regex Patterns (good groups first)
-        const rsa = getRegexScore(a.name);
-        const rsb = getRegexScore(b.name);
+        const rsa = this.getRegexScore(a.name);
+        const rsb = this.getRegexScore(b.name);
         if (rsa !== rsb) return rsb - rsa;
 
         // 4) Provider priority: SeaDex > AnimeTosho > AniLiberty > Nyaa > ACG.RIP > RuTracker
